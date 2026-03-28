@@ -48,15 +48,24 @@ publicRoutes.get('/api/status', async (c) => {
         console.error('[api/status] Restore failed:', err);
       }
 
-      // Start the gateway in the background — this is slow (up to 180s for
-      // container start + openclaw onboard) and would exceed the Worker CPU
-      // limit if done synchronously. The loading page polls every 2s.
-      console.log('[api/status] No process found, starting gateway in background');
-      c.executionCtx.waitUntil(
-        ensureGateway(sandbox, c.env).catch((err: unknown) => {
-          console.error('[api/status] Background gateway start failed:', err);
-        }),
-      );
+      // Start the gateway synchronously with a short timeout. Workers have a
+      // 30s CPU limit — restoreIfNeeded uses ~1-3s, leaving ~25s for the
+      // gateway. If it doesn't start in time, the loading page retries.
+      // We use synchronous start instead of waitUntil because waitUntil is
+      // unreliable in the Durable Object context.
+      console.log('[api/status] No process found, starting gateway...');
+      try {
+        await Promise.race([
+          ensureGateway(sandbox, c.env),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 25_000)),
+        ]);
+        process = await findExistingGatewayProcess(sandbox);
+        if (process) {
+          return c.json({ ok: true, status: 'running', processId: process.id });
+        }
+      } catch (err) {
+        console.log('[api/status] Gateway start timed out or failed, will retry on next poll');
+      }
       return c.json({ ok: false, status: 'starting' });
     }
 
