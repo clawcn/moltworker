@@ -464,7 +464,19 @@ app.all('*', async (c) => {
 
   let httpResponse: Response;
   try {
-    httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+    // For HTML requests, add a timeout to avoid hanging on cold start.
+    // containerFetch blocks until the container responds, which can take
+    // 30-60s+ on cold start. If it takes too long, serve the loading page.
+    if (acceptsHtml) {
+      httpResponse = await Promise.race([
+        sandbox.containerFetch(request, GATEWAY_PORT),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('proxy timeout')), 15_000),
+        ),
+      ]);
+    } else {
+      httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+    }
   } catch (err) {
     if (isGatewayCrashedError(err)) {
       console.log('[HTTP] Gateway crashed, attempting restore + restart and retry...');
